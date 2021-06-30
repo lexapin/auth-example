@@ -3,7 +3,7 @@ from pydantic import BaseModel as Schema, EmailStr
 
 class CreateNewUserSchema(Schema):
     email: EmailStr
-    is_active: bool
+    is_active: bool = True
     permissions: int
 
 

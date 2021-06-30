@@ -47,32 +47,32 @@ async def get_data_from_file(file_path):
     return json.loads(data)
 
 
-async def file_source(file_paths):
+async def file_source(file_path):
     await asyncio.sleep(1)
     result = []
-    for file_path in file_paths:
-        try:
-            result.extend(await get_data_from_file(file_path))
-        except BaseException:
-            pass
-    print("file_source complete read files", file_paths)
+    try:
+        result.extend(await get_data_from_file(file_path))
+    except BaseException:
+        pass
+    print("file_source complete read files", file_path)
     return result
 
 
-async def http_source(file_paths):
+async def http_source(file_path):
     await asyncio.sleep(1)
     result = []
     url = "http://localhost:8000/get/data/from/file"
-    for file_path in file_paths:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, json={"path": file_path}) as response:
-                    response.raise_for_status()
-                    if response.content_type == 'application/json':
-                        result.extend(await response.json())
-        except BaseException:
-            pass
-    print("file_source complete read files", file_paths)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, json={"path": file_path}) as response:
+                response.raise_for_status()
+                if response.content_type == 'application/json':
+                    result.extend(await response.json())
+    except TimeoutError:
+        pass
+    except BaseException:
+        pass
+    print("http_source complete read files", file_path)
     return result
 
 
@@ -91,48 +91,20 @@ async def get_data_task(task_id):
                 get_data_function = http_source
             if get_data_function is None:
                 continue
-            try:
-                task_result = await asyncio.wait_for(get_data_function(source["files"]), 2)
-                if task_result:
-                    result.extend(task_result)
-            except TimeoutError:
-                pass
+            for file_path in source["files"]:
+                task = asyncio.create_task(get_data_function(file_path))
+                tasks.append(task)
+        await asyncio.sleep(2)
+        for task in tasks:
+            if task.done():
+                result.extend(task.result())
+            else:
+                task.cancel()
         result.sort(key=lambda item: item["id"])
         TASK_MANAGER[task_id].update({
             "result": result,
             "status": "complete"
         })
-
-
-# async def get_data_task(task_id):
-#     with TimeProfiler():
-#         TASK_MANAGER[task_id].update({
-#             "status": "in_progress"
-#         })
-#         tasks = []
-#         result = []
-#         for source in sources:
-#             get_data_function = None
-#             if source["type"] == "file":
-#                 get_data_function = file_source
-#             elif source["type"] == "http":
-#                 get_data_function = http_source
-#             if get_data_function is None:
-#                 continue
-#             task = asyncio.create_task(get_data_function(source["files"]))
-#             tasks.append(task)
-#         for task in tasks:
-#             try:
-#                 task_result = await asyncio.wait_for(task, 2)
-#                 if task_result:
-#                     result.extend(task_result)
-#             except TimeoutError:
-#                 pass
-#         result.sort(key=lambda item: item["id"])
-#         TASK_MANAGER[task_id].update({
-#             "result": result,
-#             "status": "complete"
-#         })
 
 
 @app.post("/tasks")
@@ -154,10 +126,43 @@ async def get_task_result(task_id: uuid.UUID):
     raise HTTPException(404)
 
 
+async def waitable_object(function_to_wait, data, time_to_wait=2.0):
+    try:
+        result = await asyncio.wait_for(function_to_wait(data), time_to_wait)
+    except TimeoutError:
+        print(">>>>>>>>>>>TIMEOUT")
+        result = []
+    finally:
+        return result
+
+
+@app.post("/tasks/arni")
+async def get_data_in_request():
+    result = []
+    with TimeProfiler():
+        coroutines = []
+        for source in sources:
+            get_data_function = None
+            if source["type"] == "file":
+                get_data_function = file_source
+            elif source["type"] == "http":
+                get_data_function = http_source
+            if get_data_function is None:
+                continue
+            for file_path in source["files"]:
+                coroutines.append(waitable_object(get_data_function, file_path))
+        grouped_result = await asyncio.gather(*coroutines)
+        for res in grouped_result:
+            result.extend(res)
+        result.sort(key=lambda item: item["id"])
+    return result
+
+
 class PathModel(BaseModel):
     path: str
 
 
 @app.get("/get/data/from/file")
 async def data_from_file(data: PathModel):
+    await asyncio.sleep(5)
     return await get_data_from_file(data.path)

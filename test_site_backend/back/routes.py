@@ -56,11 +56,25 @@ async def edit_user(user_params: GetAndEditUserSchema,
     return user_model
 
 
-@router.post("/users/auth", tags=["auth"], response_model=bytes)
+@router.delete("/users/{user_id}", tags=["users"], dependencies=[Depends(check_user_auth)],)
+async def delete_user(user_id: int,
+                      acls: list = Permission("all", [(Allow, ActionEnum.CREATE, "all"), ]),
+                      async_session: AsyncSession = Depends(get_database_session)):
+    user_model = (await async_session.execute(select(UserModel).filter(
+        UserModel.id == user_id
+    ))).scalars().first()
+    if not user_model:
+        raise HTTPException(404)
+    await async_session.delete(user_model)
+    await async_session.flush()
+    return user_model
+
+
+@router.post("/users/auth", tags=["auth"], response_model=str)
 async def auth(auth_data: AuthSchema,
                async_session: AsyncSession = Depends(get_database_session)):
     stmt = select(UserModel).filter(UserModel.email == auth_data.email)
     user_model = (await async_session.execute(stmt)).scalars().first()
     if not user_model:
-        return HTTPException(404)
+        raise HTTPException(404)
     return user_model.generate_token()
